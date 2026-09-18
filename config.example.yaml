@@ -1,0 +1,13 @@
+judge_v2:
+  enabled: false
+  checkpoint_enabled: true
+  rename_enabled: true
+  rename_cooldown_seconds: 900
+  dm_enabled: false
+  strict_evidence: true
+  mirror_filename: .hermes_goal_state.json
+  stress:
+    switch_threshold: 70
+    critical_threshold: 90
+    hysteresis: 10
+
