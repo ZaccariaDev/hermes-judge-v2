@@ -1,50 +1,42 @@
-# Python
+# ZIP archives
+*.zip
+*.tar.gz
+*.tar
+
+# Checkpoints
+CHECKPOINT_*.md
+RECOVERY_CHECKPOINT.md
+
+# Goal state
+.hermes_goal_state.json
+
+# Deployment artifacts
+discord_whitelist.yaml
+integration/
+scripts/
+canary/
+dist/
+reports/
+
+# Not shipped as part of the package
+ARCHITECTURE.md
+CONTRACT.md
+DECISIONS.md
+DEPLOYMENT.md
+DEPLOYMENT_AGENT_PROMPT.md
+DEPLOYMENT_EVIDENCE.md
+EXTENSION_POINTS.md
+FINAL_REPORT.md
+HERMES_V2_GOAL.md
+NEXT.md
+README.md
+RECOVERY_DIRECTIVE.md
+RUNTIME_CHANGES.md
+STATUS.md
+TESTS.md
+config.example.yaml
+
+# Python cache
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Virtual environments
-venv/
-ENV/
-env/
-.venv/
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Test
+*.pyc
 .pytest_cache/
-.coverage
-htmlcov/
-
-# Build artifacts
-dist/
-*.egg
-
-# Hermes Judge V2 specific
-.github/

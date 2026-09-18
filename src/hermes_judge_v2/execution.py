@@ -234,7 +234,7 @@ def execution_guard(turn, count, fragmented_count=0, last_fragment_id=None):
     - textual_python_block : code Markdown textuel → INSIGHT (jamais WAIT_HUMAN)
     - fragmented_content : message long découpé → INSIGHT
     - execution_stalled : 3 tours sans outil → INSIGHT
-    - raw_json_tool_attempt : JSON brut → WAIT_HUMAN (problème réel d'exécution)
+    - raw_json_tool_attempt : JSON brut → INSIGHT (problème réel d'exécution)
     - no_tool_execution : pas d'outil → INSIGHT (sauf si stalled)
     """
     # Outil exécuté ET pas de bloc Python textuel : reset complet
