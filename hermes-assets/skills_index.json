@@ -1,0 +1,341 @@
+[
+  {
+    "name": "android-adb-cli",
+    "path": "android-adb-cli",
+    "description": "Connect ADB wirelessly and install APKs across networks.",
+    "tags": [],
+    "files": [
+      [
+        "SKILL.md",
+        5685
+      ]
+    ],
+    "total_size": 5685
+  },
+  {
+    "name": "android-cli-build",
+    "path": "android-cli-build",
+    "description": "Build Android APKs from Linux CLI: JDK, SDK, Gradle, AGP",
+    "tags": [],
+    "files": [
+      [
+        "SKILL.md",
+        6910
+      ],
+      [
+        "references/sdk-setup.md",
+        1964
+      ]
+    ],
+    "total_size": 8874
+  },
+  {
+    "name": "android-multimodule-apk-build",
+    "path": "android-multimodule-apk-build",
+    "description": "Build two APK modules with distinct packages and verify.",
+    "tags": [],
+    "files": [
+      [
+        "SKILL.md",
+        14650
+      ],
+      [
+        "references/adaptive-icon-sdk26-fix.md",
+        1669
+      ],
+      [
+        "references/npe-mutable-callback-pattern.md",
+        2231
+      ],
+      [
+        "references/kotlin-jvm-module.md",
+        2425
+      ],
+      [
+        "references/aapt-package-verification.md",
+        1304
+      ]
+    ],
+    "total_size": 22279
+  },
+  {
+    "name": "discord-access-control",
+    "path": "discord-access-control",
+    "description": "Manage Hermes Discord bot access.",
+    "tags": [],
+    "files": [
+      [
+        "SKILL.md",
+        1683
+      ]
+    ],
+    "total_size": 1683
+  },
+  {
+    "name": "discord-local-tts-setup",
+    "path": "discord-local-tts-setup",
+    "description": "Setup local TTS for Discord bots on Hermes with CUDA GPU.",
+    "tags": [],
+    "files": [
+      [
+        "SKILL.md",
+        4986
+      ],
+      [
+        "references/cuda-compatibility.md",
+        2103
+      ],
+      [
+        "references/hermescobot-tts-integration.md",
+        5681
+      ],
+      [
+        "references/hf-gated-models.md",
+        2632
+      ],
+      [
+        "templates/kokoro_server.py",
+        3146
+      ]
+    ],
+    "total_size": 18548
+  },
+  {
+    "name": "discord-owner-whitelist",
+    "path": "discord-owner-whitelist",
+    "description": "Whitelist Discord users for /btw and /goal — owner-only via YAML, with message commands.",
+    "tags": [
+      "discord",
+      "whitelist",
+      "/btw",
+      "/goal",
+      "owner-only",
+      "yaml-config"
+    ],
+    "files": [
+      [
+        "SKILL.md",
+        5852
+      ],
+      [
+        "references/handler-crash-silent.md",
+        3916
+      ],
+      [
+        "references/troubleshooting-ignored-user.md",
+        1942
+      ],
+      [
+        "references/from-env-courts-circuit.md",
+        908
+      ],
+      [
+        "scripts/verify-whitelist.sh",
+        1538
+      ]
+    ],
+    "total_size": 14156
+  },
+  {
+    "name": "discord-plugin-debug",
+    "path": "discord-plugin-debug",
+    "description": "Debug Discord plugin integration and media sending for Hermes Agent.",
+    "tags": [],
+    "files": [
+      [
+        "SKILL.md",
+        5106
+      ]
+    ],
+    "total_size": 5106
+  },
+  {
+    "name": "discord-send-dm",
+    "path": "discord-send-dm",
+    "description": "Send a DM via Discord REST API.",
+    "tags": [],
+    "files": [
+      [
+        "SKILL.md",
+        1463
+      ]
+    ],
+    "total_size": 1463
+  },
+  {
+    "name": "discord-server-management",
+    "path": "discord-server-management",
+    "description": "Manage Discord via REST API when discord_admin can't.",
+    "tags": [
+      "discord",
+      "rest-api",
+      "slash-commands",
+      "server-management",
+      "bot-token"
+    ],
+    "files": [
+      [
+        "SKILL.md",
+        13407
+      ],
+      [
+        "references/discord-owner-whitelist.md",
+        7980
+      ],
+      [
+        "references/discord-slash-attachments.md",
+        3552
+      ]
+    ],
+    "total_size": 24939
+  },
+  {
+    "name": "discord-voice-bot",
+    "path": "discord-voice-bot",
+    "description": "Bot Discord + Orpheus TTS CUDA — vocal, parler, STT ensuite.",
+    "tags": [],
+    "files": [
+      [
+        "SKILL.md",
+        14851
+      ],
+      [
+        "references/orpheus-installation.md",
+        4784
+      ],
+      [
+        "references/bot-integration-patterns.md",
+        2172
+      ]
+    ],
+    "total_size": 21807
+  },
+  {
+    "name": "hermes-gateway-recovery",
+    "path": "hermes-gateway-recovery",
+    "description": "Diagnostiquer et récupérer la gateway Hermes Agent quand le bot Discord (ou autre plateforme) est bloqué en état \"paused\", ne répond pas, ou plante à chaque message. Couvre ESTOP, imports cassés, adapters manquants, et redémarrage manuel sans linger.\n",
+    "tags": [],
+    "files": [
+      [
+        "SKILL.md",
+        6764
+      ],
+      [
+        "references/judge-v2-investigation.md",
+        4573
+      ],
+      [
+        "references/gateway-logging.md",
+        4754
+      ],
+      [
+        "references/bot-paused-recovery.md",
+        4914
+      ],
+      [
+        "references/auto-refine.md",
+        4313
+      ]
+    ],
+    "total_size": 25318
+  },
+  {
+    "name": "lazarus-abandoned-tech-research",
+    "path": "lazarus-abandoned-tech-research",
+    "description": "",
+    "tags": [],
+    "files": [
+      [
+        "SKILL.md",
+        4035
+      ],
+      [
+        "references/verdict-table.md",
+        1286
+      ],
+      [
+        "scripts/create_candidates.py",
+        910
+      ]
+    ],
+    "total_size": 6231
+  },
+  {
+    "name": "local-llama-delegate",
+    "path": "local-llama-delegate",
+    "description": "Délègue des tâches textuelles au modèle local Qwen2.5-7B-Instruct (llama.cpp) pour du traitement offline, privé, sans appel API externe.",
+    "tags": [],
+    "files": [
+      [
+        "SKILL.md",
+        1779
+      ]
+    ],
+    "total_size": 1779
+  },
+  {
+    "name": "local-tts-setup",
+    "path": "local-tts-setup",
+    "description": "GPU TTS for bots: Orpheus and Kokoro on CUDA, Discord voice.",
+    "tags": [],
+    "files": [
+      [
+        "SKILL.md",
+        4528
+      ],
+      [
+        "references/orpheus-gguf-limitation.md",
+        1359
+      ]
+    ],
+    "total_size": 5887
+  },
+  {
+    "name": "novel-writing",
+    "path": "novel-writing",
+    "description": "Write novels in phases; worldbuilding through final package.",
+    "tags": [],
+    "files": [
+      [
+        "SKILL.md",
+        7871
+      ],
+      [
+        "references/workspace-structure.md",
+        2465
+      ],
+      [
+        "references/phase-checklist.md",
+        3284
+      ],
+      [
+        "scripts/assemble_chapters.py",
+        3531
+      ]
+    ],
+    "total_size": 17151
+  },
+  {
+    "name": "product-monetization",
+    "path": "product-monetization",
+    "description": "Évaluer et monétiser des modules/open-source trouvés sur GitHub — scanner, classifier licence, évaluer potentiel, prioriser, prototyper, mesurer.",
+    "tags": [
+      "Monetization",
+      "GitHub",
+      "Open-Source",
+      "Micro-Product",
+      "Niche"
+    ],
+    "files": [
+      [
+        "SKILL.md",
+        12279
+      ],
+      [
+        "references/license-classification.md",
+        3847
+      ]
+    ],
+    "total_size": 16126
+  }
+]
