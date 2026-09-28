@@ -185,7 +185,7 @@ class ProductCase(unittest.TestCase):
         self.state.active_provider, self.state.active_model = "p", "current"
         registry.get("p", "current", "c1").stress = 80
         router = ModelRouter([
-            ModelCandidate("p2", "better", frozenset({"coding"}), 100000)
+            ModelCandidate("p2", "better", frozenset({"coding"}), 100000, score=90)
         ], registry)
         blocked = router.plan_switch(
             self.state, profile="coding", subtask_boundary=False,
@@ -199,6 +199,36 @@ class ProductCase(unittest.TestCase):
         self.assertTrue(planned.should_switch)
         self.assertTrue(planned.compaction.verify())
 
+    def test_17b_switch_ranks_by_global_score_not_profile_or_context(self):
+        registry = StressRegistry()
+        self.state.active_provider, self.state.active_model = "p", "current"
+        registry.get("p", "current", "c1").stress = 80
+        router = ModelRouter([
+            ModelCandidate("nous", "large-context", context_tokens=1_000_000, score=70),
+            ModelCandidate("nous", "task-profile", profiles=frozenset({"coding"}), score=80),
+            ModelCandidate("nous", "best", profiles=frozenset({"finance"}),
+                           context_tokens=8_192, score=99),
+        ], registry)
+        planned = router.plan_switch(
+            self.state, profile="coding", subtask_boundary=True,
+            critical_failure=False, next_action="implement",
+        )
+        self.assertTrue(planned.should_switch)
+        self.assertEqual(planned.target.model, "best")
+
+    def test_17c_nous_free_catalogue_is_exhaustive_and_ranked(self):
+        from hermes_judge_v2.models import FREE_FALLBACKS, NOUS_FREE_MODELS
+
+        self.assertEqual(len(NOUS_FREE_MODELS), 8)
+        self.assertEqual(len(FREE_FALLBACKS), 7)
+        self.assertEqual(
+            [item.score for item in FREE_FALLBACKS],
+            sorted((item.score for item in FREE_FALLBACKS), reverse=True),
+        )
+        retired = next(item for item in NOUS_FREE_MODELS
+                       if item.model == "meituan/longcat-2.0:free")
+        self.assertFalse(retired.enabled)
+        self.assertIn("HTTP 404", retired.disabled_reason)
     def test_18_compaction_required_for_switch(self):
         packet = ContextBuilder().compaction_for_switch(
             self.state, next_action="continue", target_model="next"

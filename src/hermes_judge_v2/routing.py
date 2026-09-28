@@ -17,6 +17,7 @@ class ModelCandidate:
     profiles: frozenset[str] = frozenset({"general"})
     context_tokens: int = 0
     cost_rank: int = 0
+    score: float = 0.0
 
 
 @dataclass
@@ -148,17 +149,15 @@ class ModelRouter:
             )
             if health.cooldown_until > now:
                 continue
-            if profile not in candidate.profiles and "general" not in candidate.profiles:
-                continue
             if health.stress + 10 >= current_health.stress and not critical_failure:
                 continue
-            eligible.append((health.stress, candidate.cost_rank, -candidate.context_tokens, candidate))
+            eligible.append(candidate)
         if not eligible:
-            return SwitchPlan(False, "no healthier compatible fallback")
-        target = sorted(eligible, key=lambda row: row[:3])[0][3]
+            return SwitchPlan(False, "no healthy fallback")
+        target = sorted(eligible, key=lambda item: (-item.score, item.model))[0]
         packet = ContextBuilder().compaction_for_switch(
             state, next_action=next_action, target_model=target.model
         )
         if not packet.verify():
             return SwitchPlan(False, "compaction verification failed")
-        return SwitchPlan(True, "verified compaction and healthy fallback", target, packet)
+        return SwitchPlan(True, "verified compaction and highest-scored healthy fallback", target, packet)
