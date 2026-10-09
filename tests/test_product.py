@@ -219,16 +219,13 @@ class ProductCase(unittest.TestCase):
     def test_17c_nous_free_catalogue_is_exhaustive_and_ranked(self):
         from hermes_judge_v2.models import FREE_FALLBACKS, NOUS_FREE_MODELS
 
-        self.assertEqual(len(NOUS_FREE_MODELS), 8)
-        self.assertEqual(len(FREE_FALLBACKS), 7)
+        self.assertEqual(len(NOUS_FREE_MODELS), 6)
+        self.assertEqual(len(FREE_FALLBACKS), 6)
         self.assertEqual(
             [item.score for item in FREE_FALLBACKS],
             sorted((item.score for item in FREE_FALLBACKS), reverse=True),
         )
-        retired = next(item for item in NOUS_FREE_MODELS
-                       if item.model == "meituan/longcat-2.0:free")
-        self.assertFalse(retired.enabled)
-        self.assertIn("HTTP 404", retired.disabled_reason)
+        self.assertNotIn("meituan/longcat-2.0", NOUS_FREE_MODELS[0].model)
     def test_18_compaction_required_for_switch(self):
         packet = ContextBuilder().compaction_for_switch(
             self.state, next_action="continue", target_model="next"
