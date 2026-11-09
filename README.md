@@ -26,6 +26,16 @@ Contrôleur de goals autonome fondé sur des preuves, conçu pour s’intégrer 
 Les fichiers de `scripts/` sont les prototypes historiques conservés pour
 audit. Le produit maintenu se trouve dans `src/hermes_judge_v2/`.
 
+## Commande Discord `/fallback off|on|status`
+
+Le dépôt distribue désormais la commande core Hermes et le pont Judge V2 qui
+respecte la même politique par fil. Le patch, le vérificateur reproductible,
+les prérequis et les limites sont dans
+[integrations/hermes-thread-fallback](integrations/hermes-thread-fallback/README.md).
+Installer le paquet Judge V2 seul ne suffit pas à ajouter la commande Discord.
+Aucune configuration personnelle, authentification ou activation automatique
+n'est incluse.
+
 ## Validation locale
 
 ```bash

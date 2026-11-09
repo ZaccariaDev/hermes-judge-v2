@@ -1,10 +1,11 @@
-"""Canonical Nous model catalogue and quality-ranked fallback chain."""
+"""GPT primary route and quality-ranked Nous fallback catalogue."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-PRIMARY_MODEL = "meituan/longcat-2.5-preview:free"
+PRIMARY_PROVIDER = "openai-codex"
+PRIMARY_MODEL = "gpt-6.1-sol"
 
 
 @dataclass(frozen=True)

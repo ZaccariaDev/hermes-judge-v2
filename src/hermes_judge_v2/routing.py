@@ -131,11 +131,17 @@ class ModelRouter:
         critical_failure: bool,
         next_action: str,
     ) -> SwitchPlan:
+        from .thread_fallback import fallback_allowed
+        if not fallback_allowed():
+            return SwitchPlan(False, "automatic fallback disabled for this Discord thread")
         self.restore(state)
         current_health = self.registry.get(
             state.active_provider or "", state.active_model or "",
             state.initial_thread_id or "",
         )
+        is_gpt = (state.active_model or "").rsplit("/", 1)[-1].lower().startswith("gpt-")
+        if is_gpt and not current_health.failures.get("quota", 0):
+            return SwitchPlan(False, "GPT remains primary until its quota is exhausted")
         stressed = current_health.stress >= 70
         if not critical_failure and not (subtask_boundary and stressed):
             return SwitchPlan(False, "switch requires a boundary plus high stress")

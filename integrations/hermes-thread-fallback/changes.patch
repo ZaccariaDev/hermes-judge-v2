@@ -1,0 +1,1137 @@
+diff --git a/agent/agent_runtime_helpers.py b/agent/agent_runtime_helpers.py
+--- a/agent/agent_runtime_helpers.py
++++ b/agent/agent_runtime_helpers.py
+@@ -1107,6 +1107,9 @@
+ def restore_primary_runtime(agent) -> bool:
+     """Restore the primary runtime at the start of a new turn so fallback stays turn-scoped
+     (long-lived CLI agents and the gateway's cached agents)."""
++    from agent.fallback_policy import fallback_allowed
++    if not fallback_allowed(agent):
++        return False
+     if not agent._fallback_activated:
+         # Reset the index even without activation: a failed _try_activate_fallback() can strand
+         # _fallback_index past the chain end and silently block future fallbacks.
+diff --git a/agent/auxiliary_client.py b/agent/auxiliary_client.py
+--- a/agent/auxiliary_client.py
++++ b/agent/auxiliary_client.py
+@@ -14,6 +14,8 @@
+ import hashlib
+ import inspect
+ import json
++from agent.fallback_policy import fallback_allowed
++
+ import logging
+ import os
+ import re
+@@ -3793,6 +3795,8 @@
+ ) -> Tuple[Optional[Any], Optional[str], str]:
+     """Try the auto-detection chain after a payment/credit or connection error, skipping the failed
+     provider (and the main-provider path when it maps to the same backend). Returns (client, model, label) or (None, None, "")."""
++    if not fallback_allowed():
++        return None, None, ""
+     skip = failed_provider.lower().strip()
+     main_provider = _read_main_provider()
+     skip_labels = {skip}
+@@ -3849,6 +3853,8 @@
+     """Last-resort fallback to the main agent provider + model after the configured chain is exhausted.
+     ``failed_model`` scoping per ``_failed_backend_skip``; same-URL custom endpoints serve many models,
+     so a hung aux model says nothing about the main model's health. Returns (client, model, label) or (None, None, "")."""
++    if not fallback_allowed():
++        return None, None, ""
+     main_provider = (_read_main_provider() or "").strip()
+     main_model = (_read_main_model() or "").strip()
+     if main_provider.lower() == "moa":
+@@ -3938,6 +3944,8 @@
+     """Try auxiliary.<task>.fallback_chain entries in order (each needs ``provider``; model/base_url/api_key optional).
+     ``failed_model`` scoping per ``_failed_backend_skip`` (sibling models on the same provider still
+     run after a model-scoped failure). Returns (client, model, provider_label) or (None, None, "")."""
++    if not fallback_allowed():
++        return None, None, ""
+     if not task:
+         return None, None, ""
+     chain = _get_auxiliary_task_config(task).get("fallback_chain")
+@@ -4024,6 +4032,8 @@
+     """Top-level main-agent fallback chain for a ``provider: auto`` auxiliary call: auto tasks honour the
+     user's main fallback policy before the built-in discovery chain; read via ``get_fallback_chain`` so
+     ``fallback_providers`` and legacy ``fallback_model`` keep the main agent's order."""
++    if not fallback_allowed():
++        return None, None, ""
+     try:
+         from hermes_cli.config import load_config_readonly
+         from hermes_cli.fallback_config import get_fallback_chain
+@@ -4170,6 +4180,8 @@
+ 
+ def _try_discovery_chain() -> Tuple[Optional[OpenAI], Optional[str], str]:
+     """Step 3: hardcoded aggregator/fallback chain, skipping unhealthy providers."""
++    if not fallback_allowed():
++        return None, None, ""
+     tried = []
+     for label, try_fn in _get_provider_chain():
+         candidate_base_url = _custom_health_base_url(label)
+@@ -4208,6 +4220,8 @@
+     routed = _try_main_provider_route(main_provider, main_model, base_url, api_key, api_mode)
+     if routed is not None:
+         return routed
++    if not fallback_allowed():
++        return None, None, ""
+     if task:
+         fb_client, fb_model, fb_label = _try_configured_fallback_chain(
+             task, main_provider or "auto", reason="main provider unavailable")
+@@ -4578,7 +4592,8 @@
+         return _route_client(req, client, final_model)
+     # Try custom first, then API-key providers (Codex excluded here:
+     # falling through to Codex with no model is a stale-constant trap).
+-    for try_fn in (_try_custom_endpoint, _resolve_api_key_provider):
++    candidates = (_try_custom_endpoint, _resolve_api_key_provider) if fallback_allowed() else (_try_custom_endpoint,)
++    for try_fn in candidates:
+         client, default = try_fn()
+         if client is not None:
+             final_model = _normalize_resolved_model(model or default, provider)
+@@ -5066,6 +5081,8 @@
+         client, default_model = _vision_main_provider_client(main_provider, main_model, runtime, resolved_model, resolved_api_mode)
+         if client is not None:
+             return _finalize_vision_client(main_provider, client, default_model, resolved_model, async_mode)
++    if not fallback_allowed():
++        return None, None, None
+     # Aggregators use their dedicated vision model, not the user's main model.
+     for candidate in _VISION_AUTO_PROVIDER_ORDER:
+         if candidate == main_provider:
+@@ -5199,7 +5216,7 @@
+     # share an entry, and the second builder's _store_cached_client would close the first's client.
+     model_key = model or runtime.get("model", "")
+     api_key_key = _runtime_cache_discriminator("api_key", api_key or "")
+-    return (provider, async_mode, base_url or "", api_key_key, api_mode or "", runtime_key, is_vision, task_key, pool_hint, model_key)
++    return (provider, async_mode, base_url or "", api_key_key, api_mode or "", runtime_key, is_vision, task_key, pool_hint, model_key, fallback_allowed())
+ 
+ 
+ def _current_event_loop() -> Any:
+@@ -6515,7 +6532,7 @@
+             model=resolved_model or model, base_url=resolved_base_url or base_url,
+             api_key=resolved_api_key or api_key, async_mode=async_mode, main_runtime=main_runtime,
+         )
+-        if client is None and resolved_provider != "auto" and not resolved_base_url:
++        if fallback_allowed() and client is None and resolved_provider != "auto" and not resolved_base_url:
+             logger.warning("Vision provider %s unavailable, falling back to auto vision backends",
+                            resolved_provider)
+             effective_provider, client, final_model = resolve_vision_provider_client(
+@@ -6549,7 +6566,7 @@
+                 effective_provider = resolved_provider
+             # Auto/custom with no credentials: walk the full auto chain (not just OpenRouter).
+             # model=None so each provider uses its own default.
+-            if client is None and not resolved_base_url:
++            if fallback_allowed() and client is None and not resolved_base_url:
+                 logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
+                             task or "call", resolved_provider)
+                 client, final_model = _get_cached_client(
+@@ -6738,7 +6755,7 @@
+     if refreshed_client is None:
+         return None
+     logger.info(message, route.task or "call", route.tag)
+-    if refreshed_model and refreshed_model != kwargs.get("model"):
++    if fallback_allowed() and refreshed_model and refreshed_model != kwargs.get("model"):
+         kwargs["model"] = refreshed_model
+     return _LadderStep("call", (refreshed_client, kwargs))
+ 
+@@ -6751,7 +6768,7 @@
+     client, task, tag = route.client, route.task, route.tag
+     # A long-lived process can pin a Portal model since dropped from the catalog (every call
+     # 404s); force a fresh Portal fetch and retry once.
+-    if _is_model_not_found_error(first_err) and client_is_nous:
++    if fallback_allowed() and _is_model_not_found_error(first_err) and client_is_nous:
+         healed_model = _refresh_nous_recommended_model(
+             vision=(task == "vision"), stale_model=kwargs.get("model"))
+         if healed_model and healed_model != kwargs.get("model"):
+@@ -6838,6 +6855,8 @@
+     Capacity errors (payment/quota, connection, exhausted 429, model incompatible, malformed
+     response) bypass the explicit-provider gate — the provider cannot serve this request
+     regardless of user intent. Auth errors only fall back in auto mode."""
++    if not fallback_allowed():
++        return None
+     task, tag, resolved_provider = route.task, route.tag, route.resolved_provider
+     # Respect explicit provider choice for transient errors (auth, request validation, etc.) but allow
+     # fallback when the provider clearly cannot serve the request due to capacity: payment/quota exhaustion
+diff --git a/agent/chat_completion_helpers.py b/agent/chat_completion_helpers.py
+--- a/agent/chat_completion_helpers.py
++++ b/agent/chat_completion_helpers.py
+@@ -1825,9 +1825,14 @@
+     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
+     model slug and provider in place so the retry loop continues on the new backend; client
+     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
++    from agent.fallback_policy import fallback_allowed
++    if not fallback_allowed(agent):
++        return False
+     from agent.fallback_cooldown import _arm_rate_limit_cooldown
+     cooldown_seconds = _arm_rate_limit_cooldown(agent, reason)
+     while True:
++        if not fallback_allowed(agent):
++            return False
+         if agent._fallback_index >= len(agent._fallback_chain):
+             return _fallback_chain_exhausted(agent, reason)
+         fb = agent._fallback_chain[agent._fallback_index]
+@@ -1871,6 +1876,8 @@
+             if not fb_api_mode_explicit and fb_api_mode == "chat_completions":
+                 fb_api_mode = _fallback_api_mode_resolved(agent, fb_provider, fb_model, fb_base_url)
+ 
++            if not fallback_allowed(agent):
++                return False
+             old_model, old_provider, old_base_url = agent.model, agent.provider, agent.base_url
+ 
+             # Clear the per-config context_length override so the fallback model's own context
+diff --git a/agent/context_compressor.py b/agent/context_compressor.py
+--- a/agent/context_compressor.py
++++ b/agent/context_compressor.py
+@@ -3162,6 +3162,9 @@
+ 
+     def _fallback_to_main_for_compression(self, e: Exception, reason: str) -> None:
+         """Fall back from a separate ``summary_model`` to the main model: record the aux failure, clear model + cooldown."""
++        from agent.fallback_policy import fallback_allowed
++        if not fallback_allowed():
++            raise e
+         self._summary_model_fallen_back = True
+         logger.warning(
+             "Summary model '%s' %s (%s). Falling back to main model '%s' for compression.",
+diff --git a/agent/conversation_compression.py b/agent/conversation_compression.py
+--- a/agent/conversation_compression.py
++++ b/agent/conversation_compression.py
+@@ -835,6 +835,9 @@
+     """
+     # An explicit stop is not a stalled route. The retry worker would abort on
+     # the same event anyway, but starting one at all makes /stop look ignored.
++    from agent.fallback_policy import fallback_allowed
++    if not fallback_allowed(telemetry_agent):
++        return None
+     hard_cancel = getattr(telemetry_agent, "_hard_interrupt_requested", None)
+     if callable(getattr(hard_cancel, "is_set", None)) and hard_cancel.is_set():
+         return None
+diff --git a/gateway/run.py b/gateway/run.py
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -2166,6 +2166,9 @@
+     try:
+         runtime = resolve_runtime_provider()
+     except AuthError as auth_exc:
++        from agent.fallback_policy import fallback_allowed
++        if not fallback_allowed():
++            raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
+         # Rate-limit cap vs real auth failure: both use the fallback chain; the log must not mislabel.
+         # Distinguish a transient rate-limit/quota cap (credentials are fine, re-auth cannot help) from a
+         # genuine auth failure (expired/revoked token). See #32790.
+@@ -2317,6 +2320,9 @@
+ 
+ def _try_resolve_fallback_provider() -> dict | None:
+     """Attempt to resolve credentials from the fallback_model/fallback_providers config."""
++    from agent.fallback_policy import fallback_allowed
++    if not fallback_allowed():
++        return None
+     from hermes_cli.runtime_provider import resolve_runtime_provider
+     try:
+         # Canonical loader so managed overlay / ${VAR} expansion reach the fallback chain.
+@@ -2325,11 +2331,15 @@
+         if not fb_list:
+             return None
+         for entry in fb_list:
++            if not fallback_allowed():
++                return None
+             try:
+                 from hermes_cli.fallback_config import resolve_entry_api_key
+                 runtime = resolve_runtime_provider(
+                     requested=entry.get("provider"), explicit_base_url=entry.get("base_url"),
+                     explicit_api_key=resolve_entry_api_key(entry))
++                if not fallback_allowed():
++                    return None
+                 # Log the config `provider`, not the runtime category (Ollama would log "openrouter").
+                 logger.info(
+                     # Log the literal `provider` key from config, not the resolved runtime category — an
+diff --git a/gateway/run_busy.py b/gateway/run_busy.py
+--- a/gateway/run_busy.py
++++ b/gateway/run_busy.py
+@@ -744,7 +744,7 @@
+     _PLAIN_COMMANDS = (
+         "status", "context", "restart", "approve", "deny", "pause", "agents", "bg", "btw",
+         "kanban", "subgoal", "heartbeat", "busy", "yolo", "verbose", "footer", "help",
+-        "commands", "profile", "update", "version",
++        "commands", "profile", "update", "version", "fallback",
+     )
+     # Dispatched only on the idle path (busy dispatch has its own allowlist).
+     _IDLE_COMMANDS = (
+diff --git a/gateway/run_config_loaders.py b/gateway/run_config_loaders.py
+--- a/gateway/run_config_loaders.py
++++ b/gateway/run_config_loaders.py
+@@ -465,9 +465,17 @@
+         """
+         if agent is None:
+             return
++        from agent.fallback_policy import fallback_allowed
++        if not fallback_allowed(agent):
++            agent._fallback_chain = []
++            agent._fallback_model = None
++            agent._thread_fallback_chain_suspended = True
++            return
++        suspended = getattr(agent, "_thread_fallback_chain_suspended", False)
++        agent._thread_fallback_chain_suspended = False
+         new_chain = list(chain or [])
+         rate_limited_until = getattr(agent, "_rate_limited_until", 0) or 0
+-        if getattr(agent, "_fallback_activated", False) and rate_limited_until > time.monotonic():
++        if not suspended and getattr(agent, "_fallback_activated", False) and rate_limited_until > time.monotonic():
+             return
+         old_chain = list(getattr(agent, "_fallback_chain", []) or [])
+         agent._fallback_chain = new_chain
+diff --git a/gateway/run_goals.py b/gateway/run_goals.py
+--- a/gateway/run_goals.py
++++ b/gateway/run_goals.py
+@@ -267,12 +267,14 @@
+         # judge_goal() is a synchronous aux-LLM HTTP call (10-40 s; would block Discord heartbeats).
+         # _run_in_executor_with_context carries the profile secret scope / aux runtime contextvars
+         # without which aux credential resolution fails under multiplexing.
+-        decision = await self._run_in_executor_with_context(
+-            lambda: mgr.evaluate_after_turn(
+-                final_response or "", user_initiated=True, background_processes=_bg_procs,
+-                active_delegations=_active_deleg,
+-            ),
+-        )
++        from agent.fallback_policy import thread_fallback_scope
++        with self._profile_scope_for_source(source), thread_fallback_scope(source):
++            decision = await self._run_in_executor_with_context(
++                lambda: mgr.evaluate_after_turn(
++                    final_response or "", user_initiated=True, background_processes=_bg_procs,
++                    active_delegations=_active_deleg,
++                ),
++            )
+         msg = decision.get("message") or ""
+         # Deferred until the visible final response is delivered, else "✓ Goal achieved" precedes it.
+         if msg and source is not None:
+diff --git a/gateway/run_turn.py b/gateway/run_turn.py
+--- a/gateway/run_turn.py
++++ b/gateway/run_turn.py
+@@ -4,6 +4,8 @@
+ """
+ 
+ from __future__ import annotations
++
++from agent.fallback_policy import fallback_allowed, thread_fallback_scope, ThreadFallbackPolicy
+ 
+ import logging
+ from typing import TYPE_CHECKING
+@@ -97,28 +99,31 @@
+                 ][:5] or "[]",
+             )
+ 
+-        runtime_kwargs = _resolve_runtime_agent_kwargs()
++        cfg = getattr(self, "config", None)  # getattr: bare object.__new__ test runners
++        ch = _get_channel_override(
++            cfg, source.platform, str(source.chat_id) if source.chat_id else "",
++            thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
++            parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
++        ) if cfg and source is not None else None
++        strict = not fallback_allowed()
++        selected_provider = ((override or {}).get("provider") or (ch.provider if ch else None)) if strict else None
++        # Resolve the selected route BEFORE global auth; no cross-provider credential borrowing in off.
++        runtime_kwargs = (_resolve_runtime_agent_kwargs_for_provider(selected_provider)
++                          if selected_provider else _resolve_runtime_agent_kwargs())
+         runtime_model = runtime_kwargs.pop("model", None)
+         if runtime_model:
+             logger.info("Runtime provider supplied explicit model override: %s -> %s", model, runtime_model)
+             model = runtime_model
+ 
+-        cfg = getattr(self, "config", None)  # getattr: bare object.__new__ test runners
+-        if cfg and source is not None:
+-            ch = _get_channel_override(
+-                cfg, source.platform, str(source.chat_id) if source.chat_id else "",
+-                thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
+-                parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
+-            )
+-            if ch:
+-                if ch.model:
+-                    model = ch.model
+-                if ch.provider:
++        if ch and not (strict and (override or {}).get("provider")):
++            if ch.model:
++                model = ch.model
++            if ch.provider:
++                if not strict:
+                     runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(ch.provider)
+-                    ch_runtime_model = runtime_kwargs.pop("model", None)
+-                    # Adopt the provider's bundled model only when the override named none.
+-                    if ch_runtime_model and not ch.model:
+-                        model = ch_runtime_model
++                ch_runtime_model = runtime_kwargs.pop("model", None)
++                if ch_runtime_model and not ch.model:
++                    model = ch_runtime_model
+ 
+         if override and skey:
+             model, runtime_kwargs = self._apply_session_model_override(skey, model, runtime_kwargs)
+@@ -1912,6 +1917,11 @@
+         ), _session_env_tokens
+ 
+     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
++        """Scope pre-worker auxiliary work as well as the worker and post-turn judge."""
++        with self._profile_scope_for_source(source), thread_fallback_scope(source):
++            return await self._handle_message_with_agent_inner(event, source, _quick_key, run_generation)
++
++    async def _handle_message_with_agent_inner(self, event, source, _quick_key: str, run_generation: int):
+         """Inner handler that runs under the _running_agents sentinel guard."""
+         _msg_start_time = time.time()
+         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
+@@ -2019,7 +2029,7 @@
+ 
+         Call via ``asyncio.to_thread``: resolution can block (credential refresh, context-length
+         probes), and the scope is entered here so contextvars behave in the worker thread."""
+-        with self._profile_scope_for_source(source):
++        with self._profile_scope_for_source(source), thread_fallback_scope(source):
+             return self._format_session_info()
+ 
+     def _format_session_info(self) -> str:
+@@ -2051,7 +2061,7 @@
+         media_types: Optional[List[str]] = None,
+     ) -> None:
+         """Profile-scoping wrapper around the background agent task (mirrors ``_run_agent``)."""
+-        with self._profile_scope_for_source(source):
++        with self._profile_scope_for_source(source), thread_fallback_scope(source):
+             return await self._run_background_task_inner(
+                 prompt, source, task_id, event_message_id, media_urls, media_types,
+             )
+@@ -2159,8 +2169,9 @@
+                     session_db=getattr(self._session_db, "_db", self._session_db),
+                     # Reload from disk — do not reuse the startup snapshot.
+                     # See #60955.
+-                    fallback_model=self._refresh_fallback_model(),
++                    fallback_model=self._refresh_fallback_model() if fallback_allowed() else None,
+                 )
++                agent._thread_fallback_policy = ThreadFallbackPolicy.for_source(source)
+                 try:
+                     return agent.run_conversation(user_message=enriched_prompt, task_id=task_id)
+                 finally:
+@@ -2560,7 +2571,7 @@
+     ) -> Dict[str, Any]:
+         """Profile-scoping wrapper around ``_run_agent_inner`` (same keyword parameters; pass-through
+         when multiplexing is off)."""
+-        with self._profile_scope_for_source(source):
++        with self._profile_scope_for_source(source), thread_fallback_scope(source):
+             return await self._run_agent_inner(message, context_prompt, history, source, session_id, **turn_kwargs)
+ 
+     def _run_agent_display_settings(self, source: SessionSource) -> "GatewayRunner._RunAgentDisplay":
+diff --git a/gateway/run_turn_runner.py b/gateway/run_turn_runner.py
+--- a/gateway/run_turn_runner.py
++++ b/gateway/run_turn_runner.py
+@@ -6,6 +6,8 @@
+ """
+ 
+ from __future__ import annotations
++
++from agent.fallback_policy import fallback_allowed, ThreadFallbackPolicy
+ 
+ import asyncio
+ import dataclasses
+@@ -971,7 +973,7 @@
+             session_db=getattr(runner._session_db, "_db", runner._session_db),
+             # Reload from disk — do not reuse the startup snapshot.
+             # See #60955.
+-            fallback_model=self._runner._refresh_fallback_model(),
++            fallback_model=self._runner._refresh_fallback_model() if fallback_allowed() else None,
+             skip_context_files=skip_context_files,
+             # Keep the persona even with minimal context: soul identity is one small file.
+             load_soul_identity=True,
+@@ -1000,6 +1002,7 @@
+         # (disk I/O under the lock stalls the idle-sweep watcher and Discord heartbeats). A chain
+         # configured after caching must reach the next turn; per-session serialization keeps it safe.
+         if found.reused and agent is not None:
++            agent._thread_fallback_policy = ThreadFallbackPolicy.for_source(ctx.source)
+             self._runner._apply_fallback_chain_to_agent(agent, runner._refresh_fallback_model())
+         if found.evicted is not None:
+             self._release_evicted_agent(found.evicted)
+@@ -1014,6 +1017,7 @@
+                     cache[ctx.session_key] = (agent, sig, msg_count, ctx.session_id)
+                     runner._enforce_agent_cache_cap()
+             logger.debug("Created new agent for session %s (sig=%s)", ctx.session_key, sig)
++        agent._thread_fallback_policy = ThreadFallbackPolicy.for_source(ctx.source)
+         return agent, found.reused
+ 
+     # ── per-turn agent wiring ───────────────────────────────────────────────────────────────
+diff --git a/gateway/slash_commands.py b/gateway/slash_commands.py
+--- a/gateway/slash_commands.py
++++ b/gateway/slash_commands.py
+@@ -25,6 +25,7 @@
+ from gateway.platforms.event import MessageEvent
+ from gateway.session import AsyncSessionStore
+ from gateway.session_transcript import TranscriptReadError
++from gateway.slash_commands_fallback import GatewayFallbackCommandsMixin
+ from gateway.slash_commands_goals import GatewayGoalCommandsMixin
+ from gateway.slash_commands_model import GatewayModelCommandsMixin
+ from gateway.slash_commands_session import GatewaySessionCommandsMixin
+@@ -157,7 +158,7 @@
+     return None if synthetic else str(thread_id)
+ 
+ 
+-class GatewaySlashCommandsMixin(
++class GatewaySlashCommandsMixin(GatewayFallbackCommandsMixin,
+     GatewayModelCommandsMixin,
+     GatewaySessionCommandsMixin,
+     GatewayStatusCommandsMixin,
+diff --git a/hermes_cli/commands.py b/hermes_cli/commands.py
+--- a/hermes_cli/commands.py
++++ b/hermes_cli/commands.py
+@@ -48,6 +48,9 @@
+ 
+ COMMAND_REGISTRY: list[CommandDef] = [
+     # Session
++    CommandDef("fallback", "Control automatic fallback for this Discord thread", "Session",
++               gateway_only=True, args_hint="off|on|status", subcommands=("off", "on", "status"),
++               busy_policy="dispatch"),
+     CommandDef("start", "Acknowledge platform start pings without a reply", "Session",
+                gateway_only=True, busy_policy="dispatch", busy_handler="start"),
+     CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
+diff --git a/hermes_cli/commands_platforms.py b/hermes_cli/commands_platforms.py
+--- a/hermes_cli/commands_platforms.py
++++ b/hermes_cli/commands_platforms.py
+@@ -368,7 +368,7 @@
+ # parity test reads this set. Aliases are never pinned ahead of canonicals.
+ _SLACK_VIA_HERMES_ONLY = frozenset({
+     "topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat",
+-    "refine", "review", "pause", "whoami", "platform", "insights"})
++    "refine", "review", "pause", "whoami", "platform", "insights", "fallback"})
+ 
+ 
+ def _sanitize_slack_name(raw: str) -> str:
+diff --git a/agent/fallback_policy.py b/agent/fallback_policy.py
+new file mode 100644
+--- /dev/null
++++ b/agent/fallback_policy.py
+@@ -0,0 +1,54 @@
++"""Profile-safe thread policy; never changes prompts, tools, history or an active route."""
++from contextlib import contextmanager, closing
++from contextvars import ContextVar
++from dataclasses import dataclass
++import json
++from pathlib import Path
++
++from hermes_constants import get_hermes_home
++
++_current_policy = ContextVar('thread_fallback_policy', default=None)
++
++
++@dataclass(frozen=True)
++class ThreadFallbackPolicy:
++    home: Path
++    key: str
++
++    @classmethod
++    def for_source(cls, source):
++        platform = getattr(getattr(source, 'platform', None), 'value', None)
++        thread = getattr(source, 'thread_id', None)
++        scope = getattr(source, 'scope_id', None) or getattr(source, 'guild_id', None)
++        if platform != 'discord' or not thread or not scope or source.chat_type == 'dm':
++            return None
++        identity = json.dumps([platform, str(scope), str(thread)], separators=(',', ':'))
++        return cls(Path(get_hermes_home()), 'thread_fallback:v1:' + identity)
++
++    def allowed(self):
++        path = self.home / 'state.db'
++        if not path.exists():
++            return True
++        from hermes_state import SessionDB
++        with closing(SessionDB(path, read_only=True)) as db:
++            return db.get_meta(self.key) != 'off'
++
++    def set_enabled(self, enabled):
++        from hermes_state import SessionDB
++        with closing(SessionDB(self.home / 'state.db')) as db:
++            db.set_meta(self.key, 'inherit' if enabled else 'off')
++
++
++def fallback_allowed(agent=None):
++    policy = getattr(agent, '_thread_fallback_policy', None) if agent is not None else None
++    policy = policy or _current_policy.get()
++    return policy is None or policy.allowed()
++
++
++@contextmanager
++def thread_fallback_scope(source):
++    token = _current_policy.set(ThreadFallbackPolicy.for_source(source))
++    try:
++        yield
++    finally:
++        _current_policy.reset(token)
+diff --git a/gateway/slash_commands_fallback.py b/gateway/slash_commands_fallback.py
+new file mode 100644
+--- /dev/null
++++ b/gateway/slash_commands_fallback.py
+@@ -0,0 +1,48 @@
++"""Deterministic Discord-thread fallback command (gateway authorization runs upstream)."""
++import asyncio
++
++from agent.fallback_policy import ThreadFallbackPolicy
++
++
++class GatewayFallbackCommandsMixin:
++    async def _handle_fallback_command(self, event):
++        arg = event.get_command_args().strip().lower() or 'status'
++        if arg not in ('off', 'on', 'status'):
++            return 'Usage: /fallback off|on|status'
++        with self._profile_scope_for_source(event.source):
++            policy = ThreadFallbackPolicy.for_source(event.source)
++            if policy is None:
++                return 'Refus : /fallback est réservé à un fil Discord de serveur ; aucune écriture.'
++            if arg != 'status':
++                await asyncio.to_thread(policy.set_enabled, arg == 'on')
++            enabled = await asyncio.to_thread(policy.allowed)
++            key = self._session_key_for_source(event.source)
++            state = self._peek_session_state(key)
++            override = state.conversation.model_override if state else None
++            from hermes_cli.config import read_user_config_raw
++            from gateway.run import _get_channel_override
++            path = policy.home / 'config.yaml'
++            config = await asyncio.to_thread(read_user_config_raw, path) if path.exists() else {}
++            model = config.get('model', {})
++            requested = dict(model) if isinstance(model, dict) else {'model': model}
++            cfg = getattr(self, 'config', None)
++            source = event.source
++            channel = _get_channel_override(
++                cfg, source.platform, str(source.chat_id), thread_id=str(source.thread_id),
++                parent_id=source.parent_chat_id,
++            ) if cfg else None
++            if channel:
++                if channel.model:
++                    requested['model'] = channel.model
++                if channel.provider:
++                    requested['provider'] = channel.provider
++            requested.update({k: v for k, v in (override or {}).items() if v is not None})
++            agent = self._cached_agent_for(key)
++            effective = (f'{agent.provider}/{agent.model}' if agent is not None
++                         else 'inconnue (aucun worker en cache)')
++            route = f"{requested.get('provider') or '?'}/{requested.get('model') or requested.get('default') or '?'}"
++            return (f"Fallback {'on (hérité)' if enabled else 'off'} — fil Discord "
++                    f"{event.source.scope_id}/{event.source.thread_id} uniquement.\n"
++                    f"Route demandée : {route}\nRoute effective : {effective}\n"
++                    'Aucune route modifiée ; appel en cours non interrompu. Les prochaines bascules sont interdites en off. '
++                    'on restaure la politique héritée. Pour sélectionner explicitement : /model <modèle> --provider <fournisseur> --session.')
+diff --git a/tests/gateway/test_dispatch_integration.py b/tests/gateway/test_dispatch_integration.py
+new file mode 100644
+--- /dev/null
++++ b/tests/gateway/test_dispatch_integration.py
+@@ -0,0 +1,55 @@
++"""Exercise the actual gateway dispatcher and authorization gates with its existing harness."""
++import asyncio
++import importlib.util
++import os
++import tempfile
++import unittest
++from dataclasses import replace
++from pathlib import Path
++from unittest.mock import patch
++
++import gateway
++from gateway.config import GatewayConfig, Platform, PlatformConfig
++from gateway.platforms.event import MessageEvent
++from gateway.session import SessionSource
++from agent.fallback_policy import ThreadFallbackPolicy
++
++
++class DispatcherTests(unittest.TestCase):
++    def test_authorized_idle_busy_denied_and_two_thread_isolation(self):
++        runtime = Path(gateway.__file__).parent.parent
++        fixture = runtime / 'tests/gateway/test_gateway_command_dispatch_minimal.py'
++        spec = importlib.util.spec_from_file_location('minimal_gateway_dispatch_fixture', fixture)
++        module = importlib.util.module_from_spec(spec)
++        spec.loader.exec_module(module)
++        runner, adapter = module._make_runner()
++        from gateway.run_busy import GatewayBusySessionMixin
++        runner._check_slash_access = GatewayBusySessionMixin._check_slash_access.__get__(runner)
++        runner.config = GatewayConfig(platforms={Platform.DISCORD:PlatformConfig(enabled=True, extra={
++            'group_allow_admin_from':['alice'], 'group_user_allowed_commands':[]})})
++        runner.adapters = {Platform.DISCORD:adapter}
++        runner._cached_agent_for = lambda key: None
++        source = SessionSource(Platform.DISCORD,'a',chat_type='thread',thread_id='a',scope_id='guild',user_id='alice')
++        with tempfile.TemporaryDirectory() as home, patch.dict(os.environ,HERMES_HOME=home):
++            async def send(arg, src=source):
++                return await runner._handle_message(MessageEvent(text='/fallback '+arg, source=src, internal=True))
++            text = asyncio.run(send('off'))
++            self.assertIn('off',text)
++            self.assertFalse(ThreadFallbackPolicy.for_source(source).allowed())
++            self.assertTrue(ThreadFallbackPolicy.for_source(replace(source,thread_id='b')).allowed())
++            denied = asyncio.run(send('on',replace(source,user_id='bob')))
++            self.assertIn('admin-only',denied)
++            self.assertFalse(ThreadFallbackPolicy.for_source(source).allowed())
++            # In-flight worker: same dispatcher, no interruption and no LLM call.
++            key = runner._session_key_for_source(source)
++            worker = module.MagicMock()
++            runner._running_agents[key] = worker
++            text = asyncio.run(send('on'))
++            self.assertIn('on (hérité)',text)
++            worker.interrupt.assert_not_called()
++            self.assertTrue(ThreadFallbackPolicy.for_source(source).allowed())
++            self.assertFalse(adapter._pending_messages)
++
++
++if __name__ == '__main__':
++    unittest.main()
+diff --git a/tests/gateway/test_thread_fallback.py b/tests/gateway/test_thread_fallback.py
+new file mode 100644
+--- /dev/null
++++ b/tests/gateway/test_thread_fallback.py
+@@ -0,0 +1,466 @@
++import asyncio
++from contextlib import closing
++import os
++import tempfile
++import unittest
++from pathlib import Path
++from types import SimpleNamespace
++from unittest.mock import patch
++
++from gateway.config import Platform
++from gateway.session import SessionSource
++from gateway.platforms.event import MessageEvent
++from gateway.slash_commands import GatewaySlashCommandsMixin
++from hermes_state import SessionDB
++
++
++class ThreadFallbackTests(unittest.TestCase):
++    def setUp(self):
++        self.temp = tempfile.TemporaryDirectory()
++        self.addCleanup(self.temp.cleanup)
++        self.home = Path(self.temp.name)
++        self.env = patch.dict(os.environ, HERMES_HOME=str(self.home))
++        self.env.start()
++        self.addCleanup(self.env.stop)
++        self.runner = GatewaySlashCommandsMixin()
++        self.runner._profile_scope_for_source = lambda source: __import__('contextlib').nullcontext()
++        self.runner._session_key_for_source = lambda source: 'session-' + str(source.thread_id)
++        self.runner._peek_session_state = lambda key: None
++        self.runner._cached_agent_for = lambda key: None
++        self.a = SessionSource(Platform.DISCORD, 'thread-a', chat_type='thread',
++                               thread_id='thread-a', scope_id='guild', user_id='alice')
++
++    def command(self, arg, source=None):
++        event = MessageEvent(text='/fallback ' + arg, source=source or self.a)
++        return asyncio.run(self.runner._handle_fallback_command(event))
++
++    def test_off_status_is_persistent_and_thread_isolated(self):
++        from agent.fallback_policy import ThreadFallbackPolicy
++        text = self.command('off')
++        self.assertIn('off', text)
++        self.assertIn('thread-a', text)
++        policy = ThreadFallbackPolicy.for_source(self.a)
++        self.assertFalse(policy.allowed())
++        b = SessionSource(Platform.DISCORD, 'thread-b', chat_type='thread',
++                          thread_id='thread-b', scope_id='guild')
++        self.assertTrue(ThreadFallbackPolicy.for_source(b).allowed())
++        with closing(SessionDB(self.home / 'state.db', read_only=True)) as db:
++            before = db.list_meta_prefix('thread_fallback:v1:')
++        self.assertIn('off', self.command('status'))
++        with closing(SessionDB(self.home / 'state.db', read_only=True)) as db:
++            self.assertEqual(before, db.list_meta_prefix('thread_fallback:v1:'))
++        self.assertFalse(ThreadFallbackPolicy.for_source(self.a).allowed())
++
++    def test_off_blocks_worker_switches_and_primary_restore_even_cached(self):
++        from agent.fallback_policy import ThreadFallbackPolicy
++        from agent.chat_completion_helpers import try_activate_fallback
++        from agent.agent_runtime_helpers import restore_primary_runtime
++        policy = ThreadFallbackPolicy.for_source(self.a)
++        agent = SimpleNamespace(_thread_fallback_policy=policy, model='already-fallback',
++                                provider='nous', _fallback_activated=True,
++                                _fallback_chain=[{'model': 'other', 'provider': 'nous'}],
++                                _fallback_index=0)
++        self.command('off')
++        self.assertFalse(try_activate_fallback(agent))
++        self.assertFalse(restore_primary_runtime(agent))
++        self.assertEqual((agent.provider, agent.model), ('nous', 'already-fallback'))
++        self.assertEqual(agent._fallback_index, 0)
++
++    def test_off_blocks_auth_recovery_before_agent_creation(self):
++        from agent.fallback_policy import thread_fallback_scope
++        from gateway.run import _resolve_runtime_agent_kwargs
++        from hermes_cli.auth import AuthError
++        self.command('off')
++        with thread_fallback_scope(self.a), patch(
++            'hermes_cli.runtime_provider.resolve_runtime_provider', side_effect=AuthError('401 expired')
++        ), patch('gateway.run._try_resolve_fallback_provider', return_value={'model': 'wrong'}) as fallback:
++            with self.assertRaises(RuntimeError):
++                _resolve_runtime_agent_kwargs()
++            fallback.assert_not_called()
++
++    def test_public_worker_and_background_wrappers_install_policy(self):
++        from agent.fallback_policy import fallback_allowed
++        from gateway.run_turn import GatewayTurnMixin
++        self.command('off')
++        seen = []
++        async def inner(*args, **kwargs):
++            seen.append(fallback_allowed())
++            seen.append(await asyncio.to_thread(fallback_allowed))
++        harness = SimpleNamespace(_profile_scope_for_source=lambda source: __import__('contextlib').nullcontext(),
++                                  _run_agent_inner=inner, _run_background_task_inner=inner)
++        asyncio.run(GatewayTurnMixin._run_agent(harness, 'x', '', [], self.a, 'rotated'))
++        asyncio.run(GatewayTurnMixin._run_background_task(harness, 'x', self.a, 'bg'))
++        self.assertEqual(seen, [False, False, False, False])
++        self.assertTrue(fallback_allowed())
++
++    def test_registry_and_busy_dispatch_reach_deterministic_handler(self):
++        from hermes_cli.commands import resolve_command, should_bypass_active_session
++        from gateway.run_busy import GatewayBusySessionMixin
++        definition = resolve_command('fallback')
++        self.assertIsNotNone(definition)
++        self.assertEqual(definition.busy_policy, 'dispatch')
++        self.assertTrue(should_bypass_active_session('fallback'))
++        self.assertIn('fallback', GatewayBusySessionMixin._PLAIN_COMMANDS)
++
++    def test_fresh_worker_receives_no_fallback_chain_when_off(self):
++        from gateway.run_turn_runner import TurnRunner
++        from agent.fallback_policy import thread_fallback_scope
++        self.command('off')
++        runner = SimpleNamespace(_prefill_messages=None, _service_tier=None, _session_db=None,
++                                 _refresh_fallback_model=lambda: [{'model': 'fallback'}])
++        capture = lambda **kw: kw
++        ctx = SimpleNamespace(source=self.a, AIAgent=capture, user_config={}, session_id='new-session',
++                              enabled_toolsets=[], disabled_toolsets=[], session_key='key')
++        turn = object.__new__(TurnRunner)
++        turn._ctx, turn._runner = ctx, runner
++        with thread_fallback_scope(self.a):
++            args = turn._build_fresh_agent({'model':'selected', 'runtime':{}}, 'discord', '', 1, {}, {}, False)
++        self.assertIsNone(args['fallback_model'])
++        self.assertEqual(args['model'], 'selected')
++
++    def test_judge_and_router_off_even_on_explicit_quota(self):
++        from agent.fallback_policy import thread_fallback_scope
++        from hermes_judge_v2 import integration
++        from hermes_judge_v2.state import GoalState
++        from hermes_judge_v2.routing import ModelRouter, ModelCandidate
++        state = GoalState.create(session_id='rotated', initial_goal='test', workspace_root=self.temp.name)
++        state.active_model, state.active_provider = 'gpt-6.1-sol', 'openai-codex'
++        router = ModelRouter([ModelCandidate('nous', 'fallback', score=99)])
++        router.record(state, 'quota')
++        self.command('off')
++        with thread_fallback_scope(self.a), patch.object(integration, '_runtime_config', return_value={}), patch.object(
++            integration, '_call_judge_candidate', side_effect=[RuntimeError('insufficient_quota'),
++                SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"verdict":"CONTINUE"}'))])]
++        ) as call:
++            with self.assertRaisesRegex(RuntimeError, 'insufficient_quota'):
++                integration._call_isolated_judge(state, 'worker')
++            self.assertEqual(call.call_count, 1)
++            self.assertFalse(router.plan_switch(state, profile='general', subtask_boundary=True,
++                critical_failure=True, next_action='continue').should_switch)
++
++    def test_auxiliary_and_compression_cannot_escape_off(self):
++        from agent.fallback_policy import thread_fallback_scope
++        from agent import auxiliary_client as aux
++        from agent.conversation_compression import _retry_compression_on_fallback_chain
++        from agent.context_compressor import ContextCompressor
++        self.command('off')
++        with thread_fallback_scope(self.a), patch.object(aux, '_try_main_provider_route', return_value=None), patch.object(
++            aux, '_try_discovery_chain', return_value=('wrong-client', 'wrong-model', 'wrong-provider')
++        ) as discovery:
++            result = aux._resolve_auto_route(main_runtime={'provider':'openai-codex','model':'selected'})
++            self.assertEqual(result, (None, None, ''))
++            discovery.assert_not_called()
++            self.assertEqual(list(aux._ladder_provider_fallback(RuntimeError('insufficient_quota'), SimpleNamespace())), [])
++            with patch('agent.conversation_compression.resolve_compression_fallback_route') as route:
++                self.assertIsNone(_retry_compression_on_fallback_chain(worker=None, messages=[],
++                    system_prompt_fallback='', idle_timeout_seconds=1, total_ceiling_seconds=1))
++                route.assert_not_called()
++            compressor = object.__new__(ContextCompressor)
++            compressor.summary_model = 'selected-summary'
++            with self.assertRaisesRegex(RuntimeError, 'quota'):
++                compressor._fallback_to_main_for_compression(RuntimeError('quota'), 'test')
++            self.assertEqual(compressor.summary_model, 'selected-summary')
++
++    def test_auxiliary_cache_is_policy_partitioned_and_all_escape_routes_closed(self):
++        from agent.fallback_policy import thread_fallback_scope
++        from agent import auxiliary_client as aux
++        inherited = aux._client_cache_key('auto', async_mode=False)
++        self.command('off')
++        with thread_fallback_scope(self.a):
++            self.assertNotEqual(inherited, aux._client_cache_key('auto', async_mode=False))
++            for fn, args in ((aux._try_configured_fallback_chain, ('compression','primary')),
++                             (aux._try_main_fallback_chain, ('compression','primary')),
++                             (aux._try_payment_fallback, ('primary',)),
++                             (aux._try_main_agent_model_fallback, ('primary',))):
++                with self.subTest(fn=fn.__name__):
++                    self.assertEqual(fn(*args), (None, None, ''))
++            route = SimpleNamespace(client=None, task='compression', tag='test')
++            with patch.object(aux, '_refresh_nous_recommended_model', return_value='other') as refresh:
++                self.assertEqual(list(aux._ladder_nous_rungs(RuntimeError('model not found'), route,
++                    {'model':'selected'}, True)), [])
++                refresh.assert_not_called()
++
++    def test_goal_continuation_installs_scope_for_judge_executor(self):
++        from agent.fallback_policy import fallback_allowed
++        from gateway.run_goals import GatewayGoalsMixin
++        self.command('off')
++        seen = []
++        def evaluate(*args, **kwargs):
++            seen.append(fallback_allowed())
++            return {}
++        async def manager(*args):
++            return SimpleNamespace(is_active=lambda: True, evaluate_after_turn=evaluate)
++        async def executor(fn):
++            return await asyncio.to_thread(fn)
++        harness = SimpleNamespace(_post_turn_manager=manager, _run_in_executor_with_context=executor,
++                                  _profile_scope_for_source=lambda source: __import__('contextlib').nullcontext())
++        asyncio.run(GatewayGoalsMixin._post_turn_goal_continuation(harness,
++            session_entry=SimpleNamespace(session_id='rotated'), source=self.a, final_response='worker'))
++        self.assertEqual(seen, [False])
++
++    def test_cached_chain_off_overrides_cooldown_without_mutating_route(self):
++        import time
++        from agent.fallback_policy import ThreadFallbackPolicy
++        from gateway.run_config_loaders import GatewayConfigLoadersMixin
++        chain = [{'provider':'nous', 'model':'next'}]
++        agent = SimpleNamespace(_thread_fallback_policy=ThreadFallbackPolicy.for_source(self.a),
++            model='already-fallback', provider='nous', _fallback_activated=True,
++            _rate_limited_until=time.monotonic()+600, _fallback_chain=list(chain), _fallback_model=chain[0],
++            _fallback_index=1)
++        self.command('off')
++        GatewayConfigLoadersMixin._apply_fallback_chain_to_agent(agent, chain)
++        self.assertEqual(agent._fallback_chain, [])
++        self.assertEqual(agent.model, 'already-fallback')
++        self.command('on')
++        GatewayConfigLoadersMixin._apply_fallback_chain_to_agent(agent, chain)
++        self.assertEqual(agent._fallback_chain, chain)
++        self.assertEqual(agent.model, 'already-fallback')
++
++    def test_off_after_candidate_resolution_still_prevents_worker_route_commit(self):
++        from agent.fallback_policy import ThreadFallbackPolicy
++        from agent.chat_completion_helpers import try_activate_fallback
++        agent = SimpleNamespace(_thread_fallback_policy=ThreadFallbackPolicy.for_source(self.a),
++            model='selected', provider='custom', base_url='https://selected.invalid',
++            _fallback_chain=[{'provider':'custom', 'model':'next', 'base_url':'https://other.invalid', 'api_key':'test', 'api_mode':'chat_completions'}],
++            _fallback_index=0, _fallback_activated=False)
++        def resolve(*args, **kwargs):
++            self.command('off')
++            return SimpleNamespace(base_url='https://other.invalid'), 'next'
++        with patch('agent.auxiliary_client.resolve_provider_client', side_effect=resolve):
++            self.assertFalse(try_activate_fallback(agent))
++        self.assertEqual(agent.model, 'selected')
++        self.assertFalse(agent._fallback_activated)
++
++    def test_inbound_scope_includes_pre_worker_auxiliary_work(self):
++        from gateway.run import GatewayRunner
++        from agent.fallback_policy import fallback_allowed
++        self.command('off')
++        runner = object.__new__(GatewayRunner)
++        seen = []
++        async def inner(*args):
++            seen.append(fallback_allowed())
++        runner._handle_message_with_agent_inner = inner
++        # A missing wrapper would otherwise need the entire turn lifecycle.
++        runner._hmwa_resolve_session = lambda *args: (_ for _ in ()).throw(AssertionError('not scoped'))
++        asyncio.run(runner._handle_message_with_agent(MessageEvent(text='work', source=self.a), self.a, 'key', 1))
++        self.assertEqual(seen, [False])
++
++    def test_no_fallback_for_rehydrated_explicit_provider_even_if_global_auth_fails(self):
++        from gateway.run import GatewayRunner
++        from agent.fallback_policy import thread_fallback_scope
++        self.command('off')
++        runner = object.__new__(GatewayRunner)
++        runner.session_store = None
++        override = {'model':'explicit-model', 'provider':'custom:chosen'}
++        runner._session_state('key').conversation.model_override = override
++        with thread_fallback_scope(self.a), patch('gateway.run._resolve_runtime_agent_kwargs',
++            side_effect=AssertionError('global resolver must not precede explicit provider')), patch(
++            'gateway.run._resolve_runtime_agent_kwargs_for_provider',
++            return_value={'provider':'custom:chosen','api_key':'test', 'credential_pool': object()}
++        ) as exact:
++            model, route = runner._resolve_session_agent_runtime(source=self.a, session_key='key', user_config={})
++        self.assertEqual(model, 'explicit-model')
++        self.assertEqual(route['provider'], 'custom:chosen')
++        exact.assert_called_once_with('custom:chosen')
++
++    def test_vision_auto_and_unavailable_explicit_do_not_change_route(self):
++        from agent.fallback_policy import thread_fallback_scope
++        from agent import auxiliary_client as aux
++        self.command('off')
++        with thread_fallback_scope(self.a), patch.object(aux, '_vision_main_provider_client', return_value=(None,None)), patch.object(
++            aux, '_resolve_strict_vision_backend', return_value=(object(), 'other')) as discovery:
++            self.assertEqual(aux._vision_auto_route({'provider':'chosen','model':'selected'}, None, None, False), (None,None,None))
++            discovery.assert_not_called()
++        with thread_fallback_scope(self.a), patch.object(aux, 'resolve_vision_provider_client', return_value=(None,None,None)) as resolve:
++            with self.assertRaises(RuntimeError):
++                aux._resolve_call_client('vision', provider='chosen', model='selected', base_url=None,
++                    api_key=None, resolved_provider='chosen', resolved_model='selected', resolved_base_url=None,
++                    resolved_api_key=None, resolved_api_mode=None, main_runtime={}, async_mode=False)
++            self.assertEqual(resolve.call_count, 1)
++
++    def test_status_never_claims_selected_gpt_when_already_on_fallback(self):
++        self.runner._peek_session_state = lambda key: SimpleNamespace(conversation=SimpleNamespace(
++            model_override={'provider':'openai-codex','model':'gpt-6.1-sol'}))
++        self.runner._cached_agent_for = lambda key: SimpleNamespace(provider='nous',model='already-fallback')
++        text = self.command('off')
++        self.assertIn('Route demandée : openai-codex/gpt-6.1-sol', text)
++        self.assertIn('Route effective : nous/already-fallback', text)
++        self.assertIn('--session', text)
++
++    def test_invalid_and_non_thread_commands_do_not_create_database(self):
++        for arg in ('bad', 'off extra'):
++            self.assertIn('Usage:', self.command(arg))
++        for source in (SessionSource(Platform.DISCORD,'parent',chat_type='group',scope_id='guild'),
++                       SessionSource(Platform.DISCORD,'dm'),
++                       SessionSource(Platform.TELEGRAM,'channel',thread_id='topic',scope_id='guild'),
++                       SessionSource(Platform.DISCORD,'unknown-guild',chat_type='thread',thread_id='t')):
++            self.assertIn('Refus', self.command('off', source))
++        self.assertFalse((self.home/'state.db').exists())
++        self.assertIn('on (hérité)', self.command('status'))
++        self.assertFalse((self.home/'state.db').exists())
++
++    def test_policy_is_shared_inside_thread_not_across_other_threads_users_guilds_profiles(self):
++        from dataclasses import replace
++        from agent.fallback_policy import ThreadFallbackPolicy
++        self.command('off')
++        self.assertFalse(ThreadFallbackPolicy.for_source(replace(self.a,user_id='bob')).allowed())
++        for source in (replace(self.a,thread_id='sibling',user_id='alice'),
++                       replace(self.a,thread_id='other',user_id='bob'),
++                       replace(self.a,scope_id='other-guild')):
++            self.assertTrue(ThreadFallbackPolicy.for_source(source).allowed())
++        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
++        token = set_hermes_home_override(self.home/'other-profile')
++        try:
++            self.assertTrue(ThreadFallbackPolicy.for_source(self.a).allowed())
++        finally:
++            reset_hermes_home_override(token)
++        self.assertFalse((self.home/'other-profile').exists())
++
++    def test_state_survives_new_rotation_agent_recreation_and_process_restart(self):
++        import subprocess, sys
++        from gateway.run import GatewayRunner
++        from agent.fallback_policy import ThreadFallbackPolicy
++        self.command('off')
++        runner = object.__new__(GatewayRunner)
++        runner._session_state('old-id').conversation.model_override = {'model':'old'}
++        runner._clear_session_boundary_security_state = lambda key: None
++        for reason in ('new','compression_rotation','session_reset'):
++            runner._clear_conversation_scope('old-id',reason=reason)
++            self.assertFalse(ThreadFallbackPolicy.for_source(self.a).allowed())
++        code = ("from agent.fallback_policy import ThreadFallbackPolicy; from gateway.session import SessionSource; "
++                "from gateway.config import Platform; "
++                "p=ThreadFallbackPolicy.for_source(SessionSource(Platform.DISCORD,'thread-a',chat_type='thread',"
++                "thread_id='thread-a',scope_id='guild')); print(p.allowed())")
++        result = subprocess.run([sys.executable,'-c',code],capture_output=True,text=True,check=True)
++        self.assertEqual(result.stdout.strip(),'False')
++
++    def test_on_restores_inherited_judge_quota_fallback(self):
++        from agent.fallback_policy import thread_fallback_scope, ThreadFallbackPolicy
++        from hermes_judge_v2 import integration
++        from hermes_judge_v2.state import GoalState
++        self.command('off')
++        self.assertIn('on (hérité)', self.command('on'))
++        state = GoalState.create(session_id='new-id', initial_goal='test', workspace_root=self.temp.name)
++        response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"verdict":"CONTINUE"}'))])
++        with thread_fallback_scope(self.a), patch.object(integration,'_runtime_config',return_value={}), patch.object(
++            integration,'_call_judge_candidate',side_effect=[RuntimeError('usage_limit_reached'),response]) as call:
++            self.assertEqual(integration._call_isolated_judge(state,'worker')['verdict'],'CONTINUE')
++        self.assertEqual(call.call_count,2)
++        self.assertTrue(ThreadFallbackPolicy.for_source(self.a).allowed())
++
++    def test_worker_every_recovery_reason_is_denied_without_network_or_route_mutation(self):
++        from agent.fallback_policy import ThreadFallbackPolicy
++        from agent.chat_completion_helpers import try_activate_fallback
++        from agent.error_classifier import FailoverReason
++        self.command('off')
++        agent = SimpleNamespace(_thread_fallback_policy=ThreadFallbackPolicy.for_source(self.a),
++                                model='selected',provider='chosen',_fallback_index=0)
++        with patch('agent.auxiliary_client.resolve_provider_client') as resolve:
++            for reason in (FailoverReason.billing,FailoverReason.rate_limit,FailoverReason.auth,
++                           FailoverReason.timeout,FailoverReason.server_error,FailoverReason.overloaded,
++                           FailoverReason.model_not_found,FailoverReason.context_overflow):
++                self.assertFalse(try_activate_fallback(agent,reason))
++            resolve.assert_not_called()
++        self.assertEqual((agent.model,agent.provider,agent._fallback_index),('selected','chosen',0))
++
++    def test_auth_inherited_other_thread_and_off_matrix(self):
++        from dataclasses import replace
++        from agent.fallback_policy import thread_fallback_scope
++        from gateway.run import _resolve_runtime_agent_kwargs
++        from hermes_cli.auth import AuthError
++        self.command('off')
++        for message in ('401 expired','429 usage_limit_reached','429 rate_limit_exceeded','404 missing','500 server','timeout'):
++            with self.subTest(message=message), thread_fallback_scope(self.a), patch(
++                'hermes_cli.runtime_provider.resolve_runtime_provider', side_effect=AuthError(message)), patch(
++                'gateway.run._try_resolve_fallback_provider',return_value={'model':'fallback'}) as fallback:
++                with self.assertRaises(RuntimeError):
++                    _resolve_runtime_agent_kwargs()
++                fallback.assert_not_called()
++        with thread_fallback_scope(replace(self.a,thread_id='b')), patch(
++            'hermes_cli.runtime_provider.resolve_runtime_provider',side_effect=AuthError('429 quota')), patch(
++            'gateway.run._try_resolve_fallback_provider',return_value={'model':'fallback'}) as fallback:
++            self.assertEqual(_resolve_runtime_agent_kwargs()['model'],'fallback')
++            fallback.assert_called_once()
++
++    def test_custom_auxiliary_route_cannot_borrow_another_providers_key(self):
++        from agent import auxiliary_client as aux
++        from agent.fallback_policy import thread_fallback_scope
++        self.command('off')
++        request = aux._ResolveRequest('custom','custom','selected',False,False,None,None,None,None,False,'judge')
++        with thread_fallback_scope(self.a), patch.object(aux,'_try_custom_endpoint',return_value=(None,None)), patch.object(
++            aux,'_resolve_api_key_provider',return_value=(SimpleNamespace(base_url='https://other.invalid',api_key='other'),'other')) as other:
++            self.assertEqual(aux._resolve_custom_branch(request),(None,None))
++            other.assert_not_called()
++
++    def test_off_during_judge_chain_blocks_every_subsequent_candidate(self):
++        from agent.fallback_policy import thread_fallback_scope
++        from hermes_judge_v2 import integration
++        from hermes_judge_v2.state import GoalState
++        state = GoalState.create(session_id='active',initial_goal='test',workspace_root=self.temp.name)
++        calls = []
++        def call(provider, model, messages):
++            calls.append((provider,model))
++            if len(calls) == 1:
++                raise RuntimeError('insufficient_quota')
++            self.command('off')
++            raise TimeoutError('candidate failed after off')
++        with thread_fallback_scope(self.a), patch.object(integration,'_runtime_config',return_value={}), patch.object(
++            integration,'_call_judge_candidate',side_effect=call):
++            with self.assertRaises(RuntimeError):
++                integration._call_isolated_judge(state,'worker')
++        self.assertEqual(len(calls),2)
++
++    def test_thread_channel_route_precedes_global_auth_and_is_reported_in_status(self):
++        from gateway.run import GatewayRunner
++        from gateway.config import GatewayConfig, PlatformConfig, ChannelOverride
++        from agent.fallback_policy import thread_fallback_scope
++        runner = object.__new__(GatewayRunner)
++        runner.session_store = None
++        runner.config = GatewayConfig(platforms={Platform.DISCORD:PlatformConfig(enabled=True,channel_overrides={
++            'thread-a':ChannelOverride(model='channel-model',provider='custom:channel')})})
++        self.runner.config = runner.config
++        self.command('off')
++        with thread_fallback_scope(self.a), patch('gateway.run._resolve_runtime_agent_kwargs',side_effect=AssertionError('global auth')), patch(
++            'gateway.run._resolve_runtime_agent_kwargs_for_provider',
++            return_value={'provider':'custom:channel','api_key':'test','credential_pool':object()}):
++            model, route = runner._resolve_session_agent_runtime(source=self.a,session_key='key',user_config={})
++        self.assertEqual((model,route['provider']),('channel-model','custom:channel'))
++        self.assertIn('Route demandée : custom:channel/channel-model',self.command('status'))
++
++    def test_command_preserves_config_route_prompt_history_tools_and_sibling_worker(self):
++        import copy
++        config = self.home/'config.yaml'
++        config.write_text('model:\n  provider: nous\n  default: already-fallback\nfallback_providers: []\n')
++        original = config.read_bytes()
++        agent = SimpleNamespace(provider='nous',model='already-fallback',system_prompt='stable-system',
++                                messages=[{'role':'user','content':'past'}],tools=[{'name':'terminal'}])
++        sibling = copy.deepcopy(agent)
++        snapshot = copy.deepcopy(vars(agent))
++        self.runner._cached_agent_for = lambda key: agent
++        self.command('off')
++        self.command('status')
++        self.command('on')
++        self.assertEqual(vars(agent),snapshot)
++        self.assertEqual(vars(sibling),snapshot)
++        self.assertEqual(config.read_bytes(),original)
++
++    def test_auth_off_during_fallback_resolution_prevents_agent_route_creation(self):
++        from agent.fallback_policy import thread_fallback_scope
++        from gateway.run import _resolve_runtime_agent_kwargs
++        from hermes_cli.auth import AuthError
++        calls=[]
++        def resolve(**kwargs):
++            calls.append(kwargs)
++            if len(calls)==1:
++                raise AuthError('primary credentials expired')
++            self.command('off')
++            return {'provider':'custom','api_key':'test','model':'fallback'}
++        with thread_fallback_scope(self.a), patch('hermes_cli.runtime_provider.resolve_runtime_provider',side_effect=resolve), patch(
++            'gateway.run._load_gateway_runtime_config',return_value={'fallback_providers':[{'provider':'custom','model':'fallback'}]}):
++            with self.assertRaises(RuntimeError):
++                _resolve_runtime_agent_kwargs()
++        self.assertEqual(len(calls),2)
++
++
++if __name__ == '__main__':
++    unittest.main()

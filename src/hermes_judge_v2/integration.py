@@ -435,14 +435,68 @@ ALLOWED_MODELS = list(MODEL_SCORES)
     return vivants
 
 
-def _call_isolated_judge(state, worker_response: str) -> dict[str, Any] | None:
-    """Use Hermes' auxiliary provider in a fresh two-message judge context."""
-    from agent.auxiliary_client import call_llm
-    messages = build_judge_prompt(state, worker_response, state.evidence)
-    response = call_llm(
-        task="goal_judge", messages=messages, temperature=0,
+def _call_judge_candidate(provider: str, model: str, messages: list) -> Any:
+    """Call exactly one route, bypassing Hermes' generic auxiliary fallback ladder."""
+    from agent.auxiliary_client import resolve_provider_client
+
+    client, resolved_model = resolve_provider_client(provider, model=model)
+    if client is None:
+        raise RuntimeError(f"Judge provider unavailable: {provider}")
+    return client.chat.completions.create(
+        model=resolved_model or model, messages=messages,
         max_tokens=4096, timeout=60,
     )
+
+
+def quota_exhausted(error: Exception) -> bool:
+    """Only billing/usage exhaustion unlocks fallback; a bare 429 is not enough."""
+    body = getattr(error, "body", None)
+    detail = body.get("error", body) if isinstance(body, dict) else {}
+    code = str(detail.get("code") or detail.get("type") or "").lower() if isinstance(detail, dict) else ""
+    exhausted_codes = {
+        "insufficient_quota", "usage_limit_reached", "quota_exhausted",
+        "credits_exhausted", "insufficient_credits", "billing_hard_limit_reached",
+    }
+    if code:
+        return code in exhausted_codes
+    if getattr(error, "status_code", None) == 402:
+        return True
+    text = str(error).lower()
+    return any(marker in text for marker in (
+        *exhausted_codes, "you have hit your usage limit", "you've hit your usage limit",
+        "credits exhausted", "out of credits", "insufficient credits",
+        "token quota exhausted", "token budget exhausted",
+    ))
+
+
+def _call_isolated_judge(state, worker_response: str) -> dict[str, Any] | None:
+    """Try GPT first on every evaluation; only quota exhaustion unlocks Nous."""
+    from .models import PRIMARY_MODEL, PRIMARY_PROVIDER, FREE_FALLBACKS
+
+    config = _runtime_config()
+    messages = build_judge_prompt(state, worker_response, state.evidence)
+    try:
+        response = _call_judge_candidate(
+            config.get("primary_provider", PRIMARY_PROVIDER),
+            config.get("primary_model", PRIMARY_MODEL), messages,
+        )
+    except Exception as exc:
+        from .thread_fallback import fallback_allowed
+        if not fallback_allowed() or not quota_exhausted(exc):
+            raise
+        # The primary's explicit exhaustion is the only gate to this chain.
+        for candidate in FREE_FALLBACKS:
+            if not fallback_allowed():
+                raise exc
+            try:
+                response = _call_judge_candidate("nous", candidate.model, messages)
+                content = getattr(getattr(response.choices[0], "message", None), "content", "")
+                payload = _extract_json(content)
+                if payload is not None:
+                    return payload
+            except Exception:
+                continue
+        raise RuntimeError("GPT quota exhausted and no Nous fallback succeeded") from exc
     content = getattr(getattr(response.choices[0], "message", None), "content", "")
     return _extract_json(content)
 
@@ -506,24 +560,6 @@ def evaluate_goal_manager(
         judge_error = str(exc)
         failures = state.model_health.get('goal_judge', {}).get('failures', 0) + 1
         state.model_health['goal_judge'] = {'failures': failures}
-
-        # Si tous les modèles sont morts, re-vérifier le catalogue Nous
-        if failures >= 2:
-            vivants = _refresh_nous_catalogue()
-            if vivants:
-                state.model_health['goal_judge'] = {'failures': 0}
-                state.touch("judge_catalogue_refreshed", models=[v['id'] for v in vivants])
-                bridge.runtime.store.save(state)
-                # Réessayer le juge avec les nouveaux modèles
-                try:
-                    payload = _call_isolated_judge(state, last_response)
-                    if payload is not None:
-                        judge_error = None
-                        failures = 0
-                except Exception as exc2:
-                    judge_error = str(exc2)
-                    failures = state.model_health.get('goal_judge', {}).get('failures', 0) + 1
-                    state.model_health['goal_judge'] = {'failures': failures}
 
         if judge_error:
             payload = {
